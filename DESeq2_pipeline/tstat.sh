@@ -2,17 +2,17 @@
 #PBS -l nodes=1:ppn=8
 #PBS -l walltime=30:00:00
 #PBS -q normal
-#PBS -o /nlustre/users/oleg/MyPrograms/TSTAT/log
-#PBS -e /nlustre/users/oleg/MyPrograms/TSTAT/log
+#PBS -o path
+#PBS -e path
 #PBS -k oe
 #PBS -m ae
-#PBS -M oleg.reva@up.ac.za
+#PBS -M your@e-mail
 #PBS -N tstat
 
 module load python-3.9.5
 module load R-4.4.3
 
-python3 /nlustre/users/oleg/MyPrograms/TSTAT/server_run.py \
+python3 /path/TSTAT/server_run.py \
     --project test \        # Project directory within 'input' directory
     --embedded '' \         # Sub-project directory or ''
     --reference test.gbk \  # Reference GBK file
