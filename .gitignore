@@ -3,11 +3,5 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Large sequencing data
-*.fastq
-*.fastq.gz
-*.fq
-*.fq.gz
-
 # Backup files
 *.bak
