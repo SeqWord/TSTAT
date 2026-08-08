@@ -1,0 +1,12 @@
+-u|input
+-o|output
+-i|test
+-f|
+-r|test.gbk
+-m|CDS
+-t|single
+-c|C
+-e|E
+-b|test
+-p|,Volcano plot,BaseMean plot
+-s|0.scratch

@@ -1,0 +1,360 @@
+import os, string
+import tools, plots
+
+###############################################################################
+# Command line interface
+class Interface:
+    def __init__(self,options=None):
+        self.cwd = ""
+        self.oIO = tools.IO()
+        if __name__ == "__main__":
+            self.cwd = ".."
+
+        self.options = {
+               "-u":"",             # input folder
+               "-o":"",             # output folder
+               "-t":"",             # project title
+               "-i":"",             # input file or all XLS, XLSX files if not specifies 
+               "-f":"",             # gene filter
+               "-l":"",             # highlighted genes
+               "-z":"",             # outlined genes
+               "-g":"",             # source genome
+               "-v":"",             # version
+               "-k":"Yes",          # Volcano plot
+               "-p":"Yes",          # Expression plot
+               "-n":"Yes",          # NormExp plot
+               "-m":"Yes",          # baseMean plot
+               "-x":"Yes",          # Text output
+               "-r":"",             # reference gene name
+               "-1":0.05,           # p1-value
+               "-2":0.001,          # p2-value
+               "-d":0.1,            # infinity cutoff
+                }
+        if options:
+            self.options.update(options)
+        
+        # Validate options
+        if tools.validate_path(self.options['-i'],self.options['-u'],['','.txt']):
+            self.execute()
+        else:
+            self.main_menu()
+            
+    def main_menu(self):
+        response = ''
+        while response != "Q":
+            print("\nGene expression pattern visualization 2020/04/11")
+            print()
+            print("Settings for this run:\n")
+            print("  T    Project title\t\t\t: " + self.options["-t"])
+            print("  I    TXT input file\t\t\t: " + self.options["-i"])
+            print("  F    Gene filter file\t\t\t: " + self.options["-f"])
+            print("  L    Highlighted Genes file\t\t: " + self.options["-l"])
+            print("  Z    Outlined Genes file\t\t: " + self.options["-z"])
+            print("  G    Source genome file\t\t: " + self.options["-g"])
+            print("  V    Version\t\t\t\t: " + self.options["-v"])
+            print("  D    Infinity cutoff\t\t\t: %s" % str(self.options['-d']).strip("0"))
+            print("  1    Upper p threshold\t\t: %s" % str(self.options['-1']).strip("0"))
+            print("  2    Lower p threshold\t\t: %s" % str(self.options['-2']).strip("0"))
+            print("  X    Save text output\t\t\t: %s" % self.options["-x"])
+            print("  K    Save volcano plot\t\t: " + self.options["-k"])
+            print("  P    Save gene expression plot\t: %s" % self.options["-p"])
+            print("  N    Save norm. expression plot\t: %s" % self.options["-n"])
+            if self.options['-n'].upper() == "YES":
+                print("\t  R    Reference gene\t\t: " + self.options["-r"])
+            print("  M    Save baseMean plot\t\t: %s" % self.options["-m"])
+            print("  Q    to quit;")
+            print()
+            print("Y to accept these settings, type the letter for one to change or Q to quit")
+            print()
+            try:
+                response = input("?").upper()
+                print()
+            except:
+                continue
+            if response == "Y":
+                if tools.validate_path(self.options['-i'],self.options['-u'],['','.txt']):
+                    self.execute()
+                continue
+            elif response == "T":
+                self.options['-t'] = input("Enter project title? ")
+                continue
+            elif response == "V":
+                self.options['-v'] = input("Enter project title? ")
+                continue
+            elif response == "I":
+                self.options['-i'] = ""
+                fname = input("Enter generic file name? ")
+                if tools.validate_path(fname,self.options['-u'],['','.txt']):
+                    self.options['-i'] = fname
+                else:
+                    print()
+                    print("Check if files with generic name %s.CDS or %s.ncRNA and extensions *.XLS or *.XLSX are in the folder '%s'" % (fname,fname,self.options['-u']))
+                continue
+            elif response == "G":
+                self.options['-g'] = ""
+                fname = input("Enter source GBK file name? ")
+                if tools.validate_path(fname,self.options['-u'],['','.gff','.gff3']):
+                    self.options['-g'] = fname
+                else:
+                    print()
+                    print("Check if files with generic name %s and extensions *.GFF or *.GFF3 are in the folder '%s'" % (fname,self.options['-u']))
+                continue
+            elif response == "F":
+                self.options['-f'] = ""
+                fname = input("Enter filter file name? ")
+                if tools.validate_path(fname,self.options['-u'],['','.txt']):
+                    self.options['-f'] = fname
+                else:
+                    print()
+                    print("Check if the file w%s with the extension *.TXT is in the folder '%s'" % (fname,self.options['-u']))
+                continue
+            elif response == "L":
+                self.options['-l'] = ""
+                fname = input("Enter highlighted gene file name? ")
+                if tools.validate_path(fname,self.options['-u'],['','.txt']):
+                    self.options['-l'] = fname
+                else:
+                    print()
+                    print("Check if the file w%s with the extension *.TXT is in the folder '%s'" % (fname,self.options['-u']))
+                continue
+            elif response == "Z":
+                self.options['-z'] = ""
+                fname = input("Enter outlined gene file name? ")
+                if tools.validate_path(fname,self.options['-u'],['','.txt']):
+                    self.options['-z'] = fname
+                else:
+                    print()
+                    print("Check if the file w%s with the extension *.TXT is in the folder '%s'" % (fname,self.options['-u']))
+                continue
+            elif response == "D":
+                v = input("Enter infinity cutoff: v >= 0? ")
+                try:
+                    v = float(v)
+                except:
+                    print()
+                    print("The value must be a floating point number >= 0")
+                    continue
+                if v < 0:
+                    print()
+                    print("The value must be a floating point number >= 0")
+                    continue
+                self.options['-d'] = v
+            elif response == "1":
+                v = input("Enter upper p-value cutoff: 0 <= p < 1? ")
+                try:
+                    v = float(v)
+                except:
+                    print()
+                    print("The value must be a floating point number 0 <= p < 1")
+                    continue
+                if v < 0 or v >= 1:
+                    print()
+                    print("The value must be a floating point number 0 <= p < 1")
+                    continue
+                self.options['-1'] = v
+            elif response == "2":
+                v = input("Enter lower p-value cutoff: 0 <= p < 1? ")
+                try:
+                    v = float(v)
+                except:
+                    print()
+                    print("The value must be a floating point number 0 <= p < 1")
+                    continue
+                if v < 0 or v >= 1:
+                    print()
+                    print("The value must be a floating point number 0 <= p < 1")
+                    continue
+                self.options['-2'] = v
+            elif response == "K":
+                if self.options['-k'].upper() == "YES":
+                    self.options['-k'] = "No"
+                else:
+                    self.options['-k'] = "Yes"
+            elif response == "P":
+                if self.options['-p'].upper() == "YES":
+                    self.options['-p'] = "No"
+                else:
+                    self.options['-p'] = "Yes"
+            elif response == "N":
+                if self.options['-n'].upper() == "YES":
+                    self.options['-n'] = "No"
+                else:
+                    self.options['-n'] = "Yes"
+            elif response == "M":
+                if self.options['-m'].upper() == "YES":
+                    self.options['-m'] = "No"
+                else:
+                    self.options['-m'] = "Yes"
+            elif response == "X":
+                if self.options['-x'].upper() == "YES":
+                    self.options['-x'] = "No"
+                else:
+                    self.options['-x'] = "Yes"
+            elif response == "R":
+                if self.options['-n'].upper() != "YES":
+                    continue
+                self.options['-r'] = input("Enter reference gene tag? ")
+            elif response == "Q":
+                print()
+                print("The program was terminated")
+                return
+            else:
+                continue
+            
+    def execute(self):
+        def validate_p_values(p1,p2):
+            if p2 < p1:
+                return p1,p2
+            if p1==p2:
+                return 0,p1
+            return p2,p1
+            
+        self.options[-1],self.options[-2] = validate_p_values(self.options['-1'],self.options['-2'])
+        self.options['-f'] = tools.validate_path(os.path.basename(self.options['-f']),self.options['-u'],['','.txt'])
+        self.options['-l'] = tools.validate_path(os.path.basename(self.options['-l']),self.options['-u'],['','.txt'])
+        self.options['-z'] = tools.validate_path(os.path.basename(self.options['-z']),self.options['-u'],['','.txt'])
+        self.options['-g'] = tools.validate_path(os.path.basename(self.options['-g']),self.options['-u'],['','.gff','.gff3'])
+        if self.options['-i']:
+            self.process(os.path.join(self.options['-u'],self.options['-i']))
+        else:
+            return
+        
+    def process(self,path):
+        cds_book = ncRNA_book = None
+        cds_book = self._add_expression_values(self.oIO.open_text_file(path,True,"\t",True)[1:])
+        if not cds_book:
+            print()
+            print("Problem with the input file %s" % self.options['-i'])
+            return
+        experiment_titles = [self.options['-t']]
+        for experiment_title in experiment_titles:
+            print(experiment_title)
+            try:
+                cds_sheet = self._import_data(cds_book.sheet_by_name(experiment_title),1,8)
+            except:
+                cds_sheet = cds_book
+            
+            if self.options['-k'].upper() == "YES":
+                print("\t...VolcanoPlot")
+                oVolcanoPlot = plots.VolcanoPlot(experiment_title,self.options['-t'],
+                    self.options['-f'],self.options['-l'],self.options['-z'],self.options['-g'],self.options['-1'],self.options['-2'],self.options['-d'])
+                if cds_sheet:
+                    oVolcanoPlot.set(cds_sheet)
+                svg,txt = oVolcanoPlot.svg()
+                version = ".vplot"
+                if self.options['-v']:
+                    version = "%s.vplot" % self.options['-v'].strip(".")
+                self.oIO.save("\n".join(svg),os.path.join(self.options['-o'],experiment_title+("%s.svg" % version)))
+                if self.options['-x'] == "Yes":
+                    self.oIO.save(txt,os.path.join(self.options['-o'],experiment_title+("%s.txt" % version)))
+            if self.options['-p'].upper() == "YES":
+                print("\t...ExpressionPlot")
+                try:
+                    strain1,strain2 = experiment_title.split("_vs_")
+                except:
+                    strain1 = "control"
+                    strain2 = "experiment"
+                oExpressionPlot = plots.ExpressionPlot(strain1,strain2,self.options['-t'],
+                    self.options['-f'],self.options['-l'],self.options['-z'],self.options['-g'],self.options['-1'],self.options['-d'])
+                if cds_sheet:
+                    oExpressionPlot.set(cds_sheet)
+                svg,txt = oExpressionPlot.svg()
+                version = ".eplot"
+                if self.options['-v']:
+                    version = "%s.eplot" % self.options['-v'].strip(".")
+                self.oIO.save("\n".join(svg),os.path.join(self.options['-o'],experiment_title+("%s.svg" % version)))
+                if self.options['-x'] == "Yes":
+                    self.oIO.save(txt,os.path.join(self.options['-o'],experiment_title+("%s.txt" % version)))
+            if self.options['-n'].upper() == "YES":
+                print("\t...NormExpressPlot")
+                try:
+                    strain1,strain2 = experiment_title.split("_vs_")
+                except:
+                    strain1 = "control"
+                    strain2 = "experiment"
+                oNormExpressionPlot = plots.NormExpressionPlot(strain1,strain2,self.options['-t'],self.options['-r'],
+                    self.options['-f'],self.options['-l'],self.options['-z'],self.options['-g'],self.options['-1'],self.options['-d'])
+                if cds_sheet:
+                    oNormExpressionPlot.set(cds_sheet)
+                if self.options['-r'] and not oNormExpressionPlot.is_reference(self.options['-r']):
+                    print()
+                    print("The reference gene %s was not found!" % self.options['-r'])
+                    continue
+                svg,txt = oNormExpressionPlot.svg()
+                version = ".neplot"
+                if self.options['-v']:
+                    version = "%s.neplot" % self.options['-v'].strip(".")
+                self.oIO.save("\n".join(svg),os.path.join(self.options['-o'],experiment_title+("%s.svg" % version)))
+                if self.options['-x'] == "Yes":
+                    self.oIO.save(txt,os.path.join(self.options['-o'],experiment_title+("%s.txt" % version)))
+            if self.options['-m'].upper() == "YES":
+                print("\t...BaseMeanPlot")
+                try:
+                    strain1,strain2 = experiment_title.split("_vs_")
+                except:
+                    strain1 = "control"
+                    strain2 = "experiment"
+                oBaseMeanPlot = plots.BaseMeanPlot(experiment_title,self.options['-t'],
+                    self.options['-f'],self.options['-l'],self.options['-z'],self.options['-g'],self.options['-1'],self.options['-d'])
+                if cds_sheet:
+                    oBaseMeanPlot.set(cds_sheet)
+                svg,txt = oBaseMeanPlot.svg()
+                version = ".mplot"
+                if self.options['-v']:
+                    version = "%s.mplot" % self.options['-v'].strip(".")
+                self.oIO.save("\n".join(svg),os.path.join(self.options['-o'],experiment_title+("%s.svg" % version)))
+                
+    def _import_data(self,sh,first_row,last_column,first_column=0):
+        data = []
+        for i in range(first_row,sh.nrows,1):
+            if sh.cell_value(rowx=i, colx=3) == "NA":
+                continue
+            data.append([])
+            for j in range(first_column,last_column,1): # GENE, baseMean, log2FoldChange, lfcSE, stat	pvalue	padj
+                val = sh.cell_value(rowx=i, colx=j)
+                try:
+                    data[-1].append(float(val))
+                except:
+                    data[-1].append(unidecode(val))
+            data[-1] += self._calculate_expresion_values(data[-1][2],data[-1][3])
+        return data
+    
+    def _add_expression_values(self,data):
+        def convert(v):
+            try:
+                return float(v)
+            except:
+                return v
+        for i in range(len(data)-1,-1,-1):
+            if len(data[i]) < 4 or data[i][3]=="NA":
+                del data[i]
+                continue
+            data[i] = list(map(lambda v: convert(v), data[i]))+self._calculate_expresion_values(float(data[i][2]),float(data[i][3]))
+        return data
+    
+    def _calculate_expresion_values(self,baseMean,logfold):
+        try:
+            baseMean = float(baseMean)
+            logfold = float(logfold)
+        except:
+            return ["",""]
+        if not logfold:
+            return baseMean,baseMean
+        if logfold < 0:
+            x2 = 2.0*baseMean/(1.0+2**abs(logfold))
+            x1 = 2.0*baseMean-x2
+            if x1 < 0:
+                x2 -= x1
+                x1 = 0
+        else:
+            x1 = 2.0*baseMean/(1.0+2**abs(logfold))
+            x2 = 2.0*baseMean-x1
+            if x2 < 0:
+                x1 -= x2
+                x2 = 0
+        return [x1,x2]
+    
+###############################################################################
+
+if __name__ == "__main__":
+    Interface()

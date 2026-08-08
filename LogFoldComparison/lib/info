@@ -1,0 +1,8 @@
+-u|input
+-o|output
+-i|S.aureus_150_ge.txt
+-a|1
+-j|S.aureus_BAA-39_ge.txt
+-b|4
+-t|COG.txt
+-f|No

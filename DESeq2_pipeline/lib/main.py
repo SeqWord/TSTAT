@@ -1,0 +1,676 @@
+import string, os, sys, subprocess, copy, platform, shutil
+from time import sleep
+import graphs,tools
+
+# Command line interface
+class Interface:
+    def __init__(self,options=None):
+        self.oValidator = Validator()
+        self.cwd = ""
+        if __name__ == "__main__":
+            self.cwd = ".."
+            
+        #self.R_path = os.path.join("C:","Program Files","R","R-3.6.1","bin","Rscript.exe")
+        self.R_path = self._rpath()
+        self.plotting_options = ["Volcano plot","BaseMean plot","Gene expression"]
+        self.outfile_name = "logfold_counts.txt"
+        self.options = {
+               "-u":"input",        # input folder
+               "-o":"output",       # output folder
+               "-i":"",             # project folder name
+               "-f":"",             # embedded folder name
+               "-r":"",             # reference GBK file
+               "-m":["CDS"],        # moltypes to include
+               "-t":"single",       # single | paired-end | smart
+               "-c":"",             # control sample marker
+               "-e":"",             # experiment sample marker
+               "-b":"",             # basename
+               "-p":"",             # plotting
+               "-s":"0.scratch",    # step to start "0.scratch|1.mapping|2.counting|3.normalization
+                }
+        if options:
+            self.options.update(options)
+            valid = self.oValidator.validate(self.options, echo=False)
+            if valid:
+                self.execute()
+            else:
+                if self.options["-i"]:
+                    self._error_message("Problems with validation of parameters!")
+                self._main_menu()
+        else:
+            self._main_menu()
+
+    # Execute selected program
+    def execute(self):
+        
+        self._save_options()
+        
+        # Check if all R libraries are available
+        self._check_R_libraries()
+        
+        # Prepare and check inital settings and folder arrangements
+        source_path = os.path.join(self.cwd,self.options['-u'],self.options['-i'],self.options['-f'])
+        root_path = os.path.join(self.cwd,self.options['-o'],self.options['-i'],self.options['-f'])
+        tmp_path = self.options['-i']
+        if self.options['-f']:
+            tmp_path += ("_%s" % self.options['-f'])
+        tmp_path = os.path.join(self.cwd,"tmp",tmp_path)
+        
+        self._create_directory(tmp_path)
+        
+        if self.options['-s'] == "0.scratch":
+            if not self._set_folders(source_path,root_path,tmp_path):
+                self._error_message(f"Problems with creating TMP folder {tmp_path}!")
+                return
+        if self.options['-s'] in ("0.scratch","1.mapping"):
+            if not self._map_reads(source_path,root_path,tmp_path):
+                self._error_message("Problems with mapping reads!")
+                return
+        if self.options['-s'] in ("0.scratch","1.mapping","2.counting"):
+            if not self._count_reads(source_path,root_path,tmp_path):
+                self._error_message("Problems with counting reads!")
+                return
+        if self.options['-s'] in ("0.scratch","1.mapping","2.counting","3.normalization"):
+            if not self._deseq2(root_path):
+                self._error_message("Problems with transcription statistics!")
+                return
+        if self.options['-p']:
+            self._plot_graphs(root_path)
+        self._remove_directory(tmp_path)
+        
+    def _check_R_libraries(self):
+        if platform.system() != "Windows":
+            return
+
+        # Check if rpy2 library is installed
+        try:
+            import rpy2.robjects as robjects
+            from rpy2.robjects.packages import importr
+            from rpy2.robjects.vectors import StrVector
+        except:
+            return 
+                          
+        # Define required Bioconductor packages
+        required_packages = ["DESeq2", "Rsubread", "GenomicFeatures"]
+        
+        # Activate BiocManager if not installed
+        robjects.r('''
+        if (!requireNamespace("BiocManager", quietly = TRUE))
+            install.packages("BiocManager", repos = "https://cloud.r-project.org/")
+        ''')
+        
+        # Check and install missing packages
+        def ensure_packages(pkgs):
+            robjects.r.assign("packages", StrVector(pkgs))
+            robjects.r('''
+            to_install <- packages[!sapply(packages, requireNamespace, quietly = TRUE)]
+            if (length(to_install) > 0) {
+                BiocManager::install(to_install, ask = FALSE, update = FALSE)
+            }
+            ''')
+        
+        # Load required packages
+        def load_packages(pkgs):
+            for pkg in pkgs:
+                robjects.r(f'library({pkg})')
+        
+        # Ensure and load
+        ensure_packages(required_packages)
+        load_packages(required_packages)
+                
+    def _set_folders(self,source_path,root_path,tmp_path):
+        # Clin TMP folder
+        self._remove_files(os.path.join(self.cwd,"tmp"))
+        # Create project folder in output
+        if not os.path.exists(os.path.join(self.cwd,self.options['-o'])):
+            os.mkdir(os.path.join(self.cwd,self.options['-o']))
+        if not os.path.exists(tmp_path):
+            os.mkdir(tmp_path)
+        self._create_directory(root_path)
+        return True
+        
+    def _map_reads(self,source_path,root_path,tmp_path):
+        print("Mapping reads to the reference sequence")
+        # Create info file1 with a list of fastq files
+        info_path = tools.save_info_list(source_path,os.path.join(tmp_path,"info"),[".fastq",".gz"],self.options["-t"])
+        if not info_path:
+            self._error_message("Folder %s does not contain any fastq files or there are some problems with pairing the paired-end files!" % source_path)
+            return
+        # Create reference fasta file
+        out_path = os.path.join(root_path,"alignments")
+        self._create_directory(out_path)
+        ref_path = tools.gbk2fasta(os.path.join(source_path,self.options['-r']),os.path.join(root_path,"%s.fa" % self.options['-b']),self.options['-b'])
+        if not ref_path:
+            self._error_message("The reference file %s is corrupted!" % self.options['-r'])
+            return
+
+        subprocess.Popen([
+            self.R_path,
+            "--vanilla",
+            os.path.join(self.cwd, "lib", "map_reads.r"),
+            os.path.join(os.getcwd(), source_path),
+            os.path.join(os.getcwd(), tmp_path),
+            os.path.join(os.getcwd(), out_path),
+            os.path.join(os.getcwd(), ref_path),
+            os.path.basename(info_path),
+            self.options['-t'],
+            self.options['-b']
+        ]).wait()
+        return True
+        
+    def _count_reads(self,input_path,root_path,tmp_path):
+        print("Counting reads per CDS")
+        source_path = os.path.join(root_path,"alignments")
+        if not os.path.exists(source_path):
+            self._error_message("Folder %s with mapped reads was not found!" % source_path)
+            return
+        info_path = tools.save_info_list(source_path,os.path.join(tmp_path,"info"),[".bam"])
+        if not info_path:
+            self._error_message("Folder %s does not contain any count files!" % source_path)
+            return
+        out_path = os.path.join(root_path,"counts")
+        self._create_directory(out_path)
+        ref_path = tools.gbk2gff(os.path.join(input_path,self.options['-r']),self.options["-m"],
+            os.path.join(root_path,"%s.gff" % self.options['-b']),self.options['-b'])
+        if not ref_path:
+            self._error_message("The reference file %s is corrupted!" % self.options['-r'])
+            return
+        input_bam_files = tools.open_text_file(info_path, True)
+        counts = [[f'"{s}"'] for s in input_bam_files]
+        for moltype in self.options['-m']:
+            subprocess.Popen([
+                self.R_path,
+                "--vanilla",
+                os.path.join(self.cwd, "lib", "feature_counts.r"),
+                os.path.join(os.getcwd(), source_path),
+                os.path.join(os.getcwd(), out_path),
+                os.path.join(os.getcwd(), ref_path),
+                os.path.join(os.getcwd(), info_path),
+                moltype
+            ]).wait()
+                
+            for i in range(len(input_bam_files)):
+                tmp_conts_fname = input_bam_files[i]+".count.tmp"
+                tmp_counts = tools.open_text_file(os.path.join(out_path,tmp_conts_fname),True)[1:]
+                counts[i] += tmp_counts
+                os.remove(os.path.join(out_path,tmp_conts_fname))
+        list(map(lambda i: tools.save_text_file(os.path.join(out_path,input_bam_files[i]+".count"),"\n".join(counts[i])), range(len(input_bam_files))))
+        
+        count_list = tools.create_info_list(out_path,[".count"])
+        if not count_list:
+            self._error_message("Feature count files were not found in the folder %s" % out_path)
+            return
+        control_samples = list(filter(lambda fn: fn.find(self.options['-c']) > -1, count_list))
+        control_samples.sort()
+        experimental_samples = list(filter(lambda fn: fn.find(self.options['-e']) > -1, count_list))
+        experimental_samples.sort()
+        counts = [map(lambda fn: "\"%s\"" % fn[:-24], control_samples+experimental_samples)]
+        coldata = ["\tcondition\ttype"]
+        control_number = len(control_samples)
+        c = 1
+        count_cond = [1,1]
+        title_line = []
+        for fname in (control_samples+experimental_samples):
+            data = tools.open_text_file(os.path.join(out_path,fname),True," ")[1:]
+            data = list(filter(lambda item: len(item) >= 2, data))
+            data = list(map(lambda item: [" ".join(item[:-1]).replace("\"",""),item[-1]], data))
+            if len(counts)==1:
+                counts += list(map(lambda item: ["\"%s\"" % item[0]], data))
+            for i in range(len(data)):
+                if "\"%s\"" % data[i][0] != counts[i+1][0]:
+                    self._error_message("Feature mismatch in feature count files!")
+                    return
+                counts[i+1].append(data[i][1])
+            condition = "control"
+            title = "ctrl_%d" % count_cond[0]
+            if c > control_number:
+                condition = "experiment"
+                title = "expr_%d" % count_cond[1]
+                count_cond[1] += 1
+            else:
+                count_cond[0] += 1
+            title_line.append("\"%s\"" % title)
+            coldata.append("\"%s\"\t%s\t%s\t#%s" % (title,condition,self.options['-t'],fname[:-24]))
+            c += 1
+        tools.save_text_file(os.path.join(out_path,"counts.txt"),"\n".join(list(map(lambda item: " ".join(item),[title_line]+counts[1:]))))
+        tools.save_text_file(os.path.join(out_path,"coldata"),"\n".join(coldata))
+        return True
+        
+    def _deseq2(self,source_path):
+        data_path = os.path.join(source_path,"counts")
+        if not os.path.exists(os.path.join(data_path,"counts.txt")) or not os.path.exists(os.path.join(data_path,"coldata")):
+            self._error_message("DSeq2 input file are missed!")
+            return
+
+        subprocess.Popen([
+            self.R_path,
+            "--vanilla",
+            os.path.join(self.cwd, "lib", "deseq2.r"),
+            os.path.join(os.getcwd(), source_path),
+            self.outfile_name
+        ]).wait()
+    
+        '''
+        subprocess.Popen("%s --vanilla %s %s %s" % (self.R_path,"\"%s\"" % os.path.join(self.cwd,"lib","deseq2.r"),
+            "\"%s\"" % os.path.join(os.getcwd(),source_path),self.outfile_name)).wait()
+        '''
+        if not os.path.exists(os.path.join(source_path,self.outfile_name)):
+            self._error_message("Error in DESeq2 algorithm!")
+            return
+        self._format_output_file(os.path.join(source_path,self.outfile_name))
+        return True
+        
+    def _plot_graphs(self,root_path):
+        pl_options = dict(zip(self.plotting_options,list(map(lambda i: "No", range(len(self.plotting_options))))))
+        for key in self.options['-p'].split(","):
+            pl_options[key] = "Yes"
+        options = {
+                   "-u":root_path,                            # input folder
+                   "-o":root_path,                            # output folder
+                   "-t":self.options['-b'],                   # title
+                   "-i":self.outfile_name,                    # generic input file name
+                   "-f":"",                                   # gene filter
+                   "-l":"",                                   # highlighted genes
+                   "-g":self.options['-b']+".gff",            # source genome
+                   "-v":"",                                   # source genome
+                   "-k":pl_options[self.plotting_options[0]], # Volcano plot
+                   "-p":pl_options[self.plotting_options[2]], # Expression plot
+                   "-n":"No",                                 # NormExp plot
+                   "-m":pl_options[self.plotting_options[1]], # baseMean plot
+                   "-x":"Yes",                                # Text output
+                   "-r":"",                                   # reference gene name
+                   "-1":0.05,                                 # p1-value
+                   "-2":0.001,                                # p2-value
+                   "-c":1,                                    # infinity cutoff
+                }
+        oGraphs = graphs.Interface(options)
+
+    def _format_output_file(self,path):
+        data = tools.open_text_file(path,True,",")
+        data[0][0] = "\"tag\"\t\"moltype\""
+        for i in range(1,len(data),1):
+            s = data[i][0].replace("\"","").split("-")
+            data[i][0] = "%s\t%s" % ("-".join(s[1:]),s[0])
+        tools.save_text_file(path,"\n".join(list(map(lambda item: "\t".join(item),data))))
+    
+    # show command prompt interface
+    def _main_menu(self):
+        response = ''
+        while response != "Q":
+            print()
+            print("TSTAT transcriptomics 2025/06/06")
+            print()
+            print("Settings for this run:\n")
+            print("  I    Project folder\t\t: " + self.options["-i"])
+            print("  F    Subfolder (optional)\t: " + self.options["-f"])
+            print("  R    Reference GBK file\t: " + str(self.options["-r"]))
+            print("  M    Moltypes to include\t: " + "|".join(self.options["-m"]))
+            print("  T    Single or paired end?\t: " + self.options["-t"])
+            print("  C    Control sample marker\t: " + self.options["-c"])
+            print("  E    Experiment sample marker\t: " + self.options["-e"])
+            print("  B    Project basename\t\t: " + self.options["-b"])
+            if self.options['-p']:
+                print("  P    Plot results\t\t: Yes")
+            else:
+                print("  P    Plot results\t\t: No")
+            print("  S    Start point\t\t: " + self.options["-s"])
+            print()
+            print("Press L-Enter to load the last run options.")
+            print("Y to accept these settings, type the letter for one to change or Q to quit")
+            print()
+            try:
+                response = input("?").upper()
+                print()
+            except:
+                continue
+            if response == "Q":
+                return
+            elif response == "L":
+                self._load_options()
+            elif response == "Y":
+                valid = self.oValidator.validate(self.options)
+                if valid:
+                    self.execute()
+                else:
+                    self._error_message("Problems with validation of parameters!")
+            elif response == "I":
+                self.options['-i'] = input("Enter name of the project folder in '%s'? " % self.options['-u'])
+                if not os.path.exists(os.path.join(self.options['-u'],self.options['-i'])):
+                    print()
+                    print("Folder %s does not exist!" % os.path.join(self.options['-u'],self.options['-i']))
+                    print()
+            elif response == "F":
+                self.options['-f'] = input("Enter name of subfolder (optional) in '%s'? " % os.path.join(self.options['-u'],self.options['-i']))
+            elif response == "R":
+                if not self.options['-i']:
+                    print()
+                    print("First set the project folder!")
+                    print()
+                    continue
+                self.options['-r'] = input("Enter name of the reference GBK file in %s? " % os.path.join(self.options['-u'],self.options['-i'],"*"))
+                if not os.path.exists(os.path.join(self.options['-u'],self.options['-i'],self.options['-r'])):
+                    print()
+                    print("File %s does not exist!" % os.path.join(self.options['-u'],self.options['-i'],self.options['-r']))
+                    print()
+            elif response == "M":
+                self._select_moltypes()
+            elif response == "T":
+                if self.options['-t']=="single":
+                    self.options['-t']="paired-end"
+                elif self.options['-t']=="paired-end":
+                    self.options['-t']="smart"
+                else:
+                    self.options['-t']="single"
+            elif response == "S":
+                if self.options['-s']=="0.scratch":
+                    self.options['-s']="1.mapping"
+                elif self.options['-s']=="1.mapping":
+                    self.options['-s']="2.counting"
+                elif self.options['-s']=="2.counting":
+                    self.options['-s']="3.normalization"
+                elif self.options['-s']=="3.normalization":
+                    self.options['-s']="4.plotting"
+                else:
+                    self.options['-s']="0.scratch"
+            elif response == "P":
+                self.options['-p'] = self._set_plotting_options()
+            elif response == "C":
+                self.options['-c'] = input("Enter marker of control sample files? ")
+            elif response == "E":
+                self.options['-e'] = input("Enter marker of experiment sample files? ")
+            elif response == "B":
+                self.options['-b'] = input("Enter project basename? ")
+                if not self.oValidator.check_file_name(self.options['-b']):
+                    print()
+                    print("Basename may not contain the following symbols: %s!" % ",".join(self.oValidator.prohibited_symbols))
+                    print()
+                    self.options['-b'] = ""
+            continue
+        
+    def _select_moltypes(self):
+        response = ''
+        nonstandard_keys = copy.deepcopy(self.options['-m'])
+        for key in ("CDS","ncRNA","rRNA","RNA"):
+            if key in nonstandard_keys:
+                nonstandard_keys.remove(key)
+        while response != "S":
+            print("\n")
+            print("Select molecular types to include:\n")
+            if "CDS" in self.options['-m']:
+                print("  D    CDS\t\t: Yes")
+            else:
+                print("  D    CDS\t\t: No")
+            if "RNA" in self.options['-m']:
+                print("  A    RNA\t\t: Yes")
+            else:
+                print("  A    RNA\t\t: No")
+            if "ncRNA" in self.options['-m']:
+                print("  C    ncRNA\t\t: Yes")
+            else:
+                print("  C    ncRNA\t\t: No")
+            if "rRNA" in self.options['-m']:
+                print("  R    rRNA\t\t: Yes")
+            else:
+                print("  R    rRNA\t\t: No")
+            for i in range(len(nonstandard_keys)):
+                print("  %d    %s\t\t: Yes" % (i+1,nonstandard_keys[i]))
+            print("  N    New key")
+            print("  S    Save selection")
+            print()
+            try:
+                response = input("?").upper()
+                print()
+            except:
+                continue
+            if response == "S":
+                self.options['-m'] += nonstandard_keys
+                if len(self.options['-m']) > 1:
+                    self.options['-m'].sort()
+                return
+            if response == "D":
+                if "CDS" in self.options['-m']:
+                    self.options['-m'].remove('CDS')
+                else:
+                    self.options['-m'].append("CDS")
+                continue
+            if response == "C":
+                if "ncRNA" in self.options['-m']:
+                    self.options['-m'].remove('ncRNA')
+                else:
+                    self.options['-m'].append("ncRNA")
+                continue
+            if response == "A":
+                if "RNA" in self.options['-m']:
+                    self.options['-m'].remove('RNA')
+                else:
+                    self.options['-m'].append("RNA")
+                continue
+            if response == "R":
+                if "rRNA" in self.options['-m']:
+                    self.options['-m'].remove('rRNA')
+                else:
+                    self.options['-m'].append("rRNA")
+                continue
+            if response == "N":
+                print()
+                new_key = input("Enter new key: ")
+                if not new_key or new_key in ("CDS","RNA","ncRNA","rRNA") or new_key in nonstandard_keys:
+                    continue
+                nonstandard_keys.append(new_key)
+                continue
+            try:
+                response = int(response)
+                if response < 1 or response > len(nonstandard_keys):
+                    continue
+                self.options['-m'].remove(nonstandard_keys[response-1])
+                del nonstandard_keys[response-1]
+            except:
+                continue
+        
+    def _set_plotting_options(self):
+        pl_options = self.options['-p'].split(",")
+        print()
+        while self.plotting_options:
+            for i in range(len(self.plotting_options)):
+                if self.plotting_options[i] in pl_options:
+                    print("%d. %s%sYes" % (i+1,self.plotting_options[i],"\t"*(4-len(self.plotting_options[i])//6)))
+                else:
+                    print("%d. %s%sNo" % (i+1,self.plotting_options[i],"\t"*(4-len(self.plotting_options[i])//6)))
+            print("   S - save and return")
+            try:
+                response = input("?").upper()
+                print()
+            except:
+                continue
+            if response == "S":
+                return ",".join(pl_options)
+            try:
+                j = int(response)-1
+            except:
+                continue
+            if j < 0 or j >= len(self.plotting_options):
+                print()
+                print("Enter value in range 1-%d, or S" % len(self.plotting_options))
+                print()
+                continue
+            if self.plotting_options[i] in pl_options:
+                pl_options.remove(self.plotting_options[j])
+            else:
+                pl_options.append(self.plotting_options[j])
+        
+    def _remove_directory(self,path):
+        if not os.path.exists(path):
+            return
+        self._remove_files(path,True)
+        try:
+            os.removedirs(path)
+        except:
+            path
+        
+    def _remove_files(self,path,flg_with_folder=False):
+        if not os.path.exists(path):
+            return
+        for fname in os.listdir(path):
+            if os.path.isdir(os.path.join(path,fname)):
+                self._remove_files(os.path.join(path,fname),flg_with_folder)
+            else:
+                os.remove(os.path.join(path,fname))
+        if flg_with_folder:
+            try:
+                os.removedirs(path)
+            except:
+                pass
+                
+    def _save_options(self):
+        options = copy.deepcopy(self.options)
+        options['-m'] = ",".join(options['-m'])
+        tools.save_text_file(os.path.join(self.cwd,"lib","info"),"\n".join(list(map(lambda item: "%s|%s" % (item[0],item[1]),options.items()))))
+    
+    def _load_options(self):
+        path = os.path.join(self.cwd,"lib","info")
+        if not os.path.exists(path):
+            return
+        try:
+            options = tools.open_text_file(path,True,"|",True)
+        except:
+            return
+        if "-m" not in options or not options['-m']:
+            options['-m'] = ["CDS"]
+        else:
+            options['-m'] = options['-m'].split(",")
+        self.options.update(options)
+        
+    def _create_directory(self,path):
+        if os.path.exists(path):
+            self._remove_directory(path)
+        counter = 1 
+        while not os.path.exists(path):
+            try:
+                os.makedirs(path)
+            except:
+                sleep(0.01)
+                counter += 1
+            if counter==5:
+                self._error_message("Problem with the access to the folder %s!" % path)
+                break
+            
+    def _select_path(self,path):
+        versions = list(filter(lambda fn: os.path.isdir(os.path.join(path,fn)), os.listdir(path)))
+        print()
+        print("Select R version:")
+        for i in range(len(versions)):
+            print("%d\t%s" % (i+1,versions[i]))
+        version = 0
+        while version not in range(1,len(versions)+1,1):
+            version = input("Select R version number: ")
+            try:
+                version = int(version)
+            except:
+                self._error_message("Version must be in the range from 1 to %d!" % (len(versions)+1))
+                version = 0
+        return os.path.join(path,versions[version-1],"bin","Rscript.exe")
+    
+    def _rpath(self):
+        if os.path.exists(os.path.join(self.cwd,"lib","rinfo")):
+            path = tools.open_text_file(os.path.join(self.cwd,"lib","rinfo")).replace("\\","\\\\")
+            if os.path.exists(path):
+                return path
+            else:
+                self._error_message("File 'lib/rinfo' contains wrong path to the R executable %s" % path)
+
+        if platform.system() == "Windows":
+            path = shutil.which("Rscript.exe") or "C://Program Files/R/R-4.4.3/bin/Rscript.exe"
+        elif platform.system() in ("Linux", "Darwin"):
+            path = shutil.which("Rscript") or "/usr/bin/Rscript"
+        else:
+            raise RuntimeError("Unsupported OS for R execution.")
+            
+        if os.path.exists(path) and os.path.isfile(path):
+            tools.save_text_file(os.path.join(self.cwd,"lib","rinfo"),path)
+            return path
+        path = self._select_path("C:\\Program Files\\R")
+        if os.path.exists(path):
+            tools.save_text_file(os.path.join(self.cwd,"lib","rinfo"),path)
+            return path
+        self._error_message("Check location of R installation and write the path to 'lib/rinfo'")
+
+    def _error_message(self,msg):
+        print()
+        print(msg)
+        print()
+        #input("Press Enter to continue...")
+        sys.exit()
+    
+# Validator
+class Validator:
+    def __init__(self):
+        self.cwd = ""
+        self.prohibited_symbols = [">","<","|",":","\\","/","\"","?","*"]
+        
+    def validate(self,options,field="",echo=True):
+        if not field:
+            return self.validate_all(options, echo)
+        elif field in ("-c","-e","-b","-m"):
+            return options[field]
+        elif field in ("-s","-p","-f"):
+            return True
+        elif field in ("-t"):
+            if not options[field] in ("single","paired-end","smart"):
+                self.print_msg("Wrong data file type setting %s!" % options[field])
+                return
+            if options[field] != "single" and options["-s"]=="0.scratch" and platform.system() == "Windows":
+                print()
+                response = input("Paired-end files marked by unique marks '_1' and '_2' are expect in the input. Type Y/N to confirm: ")
+                if response.upper() == "Y":
+                    return True
+                else:
+                    return
+            return True
+        elif field in ("-i"):
+            if not options[field] or not options['-u']:
+                self.print_msg("The input path is not set!")
+                return
+            return self.validate_path(os.path.join(self.cwd,options["-u"],options[field]))
+        elif field in ("-r"):
+            if not options[field] or not options['-i'] or not options['-u']:
+                self.print_msg("The input path is not set!")
+                return
+            return self.validate_path(os.path.join(self.cwd,options["-u"],options['-i'],options['-f'],options[field]))
+        elif field in ("-u","-o"):
+            return self.validate_path(os.path.join(self.cwd,options[field]))
+        else:
+            self.print_msg("Unknown option %s!" % field)
+            return
+        
+    def validate_all(self,options, echo=True):
+        for field in options.keys():
+            valid = self.validate(options,field)
+            if not valid:
+                if echo:
+                    self.print_msg("Problem with parameter %s!" % field)
+                return
+        return self.check_file_name(options['-b'])
+        
+    def validate_path(self,path):
+        if not path:
+            return
+        if os.path.exists(path):
+            return path
+        return ""
+        
+    def check_file_name(self,fname):
+        for symbol in self.prohibited_symbols:
+            if fname.find(symbol) > -1:
+                return False
+        return True
+    
+    def print_msg(self,msg):
+        print()
+        print(msg)
+        print()
+        
+###############################################################################
+
+if __name__ == "__main__":
+    oInterface = Interface()
+    
